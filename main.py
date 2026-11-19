@@ -93,16 +93,50 @@ def get_true_chance(raw_name, chance_raw):
     except:
         return str(chance_raw)
 
-@app.route("/webhook", methods=["POST"])
+@app.route("/webhook", methods=["GET", "POST"])
+@app.route("/webhook/", methods=["GET", "POST"])
 def handle_xt_hub():
-    data = request.json or {}
+    # XT Hub Test button does a GET check - just say OK so it doesn't 404
+    if request.method == "GET":
+        return jsonify({"ok": True, "status": "Aura Tracker is online!"}), 200
+
+    data = request.get_json(silent=True) or {}
+    # XT Hub sometimes sends Discord-style embeds
+    if not data and request.form:
+        data = dict(request.form)
     aura = data.get("aura") or data.get("name") or ""
     chance = data.get("chance") or data.get("rarity") or ""
     username = data.get("username") or data.get("player") or "Someone"
-    if not aura and "content" in data:
+
+    # If XT Hub sent a Discord embed (test message), parse it
+    if not aura and data.get("embeds"):
+        try:
+            emb = data["embeds"][0]
+            text = (emb.get("title") or "") + " " + (emb.get("description") or "")
+            m = re.search(r'(.+?)\s+1 in ([\d,]+)', text, re.I)
+            if m:
+                aura, chance = m.group(1), m.group(2)
+            else:
+                aura = emb.get("title") or "Test Aura"
+        except:
+            aura = "Test Aura"
+
+    if not aura and data.get("content"):
         m = re.search(r'(.+?)\s+1 in ([\d,]+)', data["content"], re.I)
         if m:
             aura, chance = m.group(1), m.group(2)
+        else:
+            # Plain test message from XT Hub, just forward it
+            aura = data["content"][:50] or "Test"
+
+    if not aura:
+        aura = "Test Aura"
+    if not chance:
+        chance = "1,000,000"
+
+    # If this is just XT Hub's test, don't fail - send a test embed
+    is_test = "test" in str(aura).lower() or "test" in str(data.get("content", "")).lower()
+
     rarity = get_actual_rarity(aura, chance)
     chance = get_true_chance(aura, chance)
     color = RARITY_COLORS.get(rarity.lower(), 0xFFFFFF)
@@ -114,8 +148,9 @@ def handle_xt_hub():
         "color": color,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
-    requests.post(DISCORD_WEBHOOK, json={"embeds": [embed]})
-    return jsonify({"ok": True, "aura": aura, "rarity": rarity, "rolled_on": rolled_text})
+    if DISCORD_WEBHOOK and "discord.com" in DISCORD_WEBHOOK:
+        requests.post(DISCORD_WEBHOOK, json={"embeds": [embed]})
+    return jsonify({"ok": True, "aura": aura, "rarity": rarity, "rolled_on": rolled_text}), 200
 
 @app.route("/", methods=["GET"])
 def home():
